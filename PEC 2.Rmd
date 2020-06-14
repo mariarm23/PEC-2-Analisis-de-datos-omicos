@@ -1,0 +1,351 @@
+---
+title: "PEC 2 ADO"
+author: "María Rodríguez Merchán"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## SELECCIÓN, OBTENCIÓN Y PREPARADO DE MUESTRAS
+
+```{r}
+library(readxl)
+```
+
+```{r}
+targets <- read.csv("/Users/maria/OneDrive/UOC/Análisis de datos ómicos/PEC 2/data/targets.csv", header= TRUE)
+counts <- read.csv("/Users/maria/OneDrive/UOC/Análisis de datos ómicos/PEC 2/data//counts.csv", header= TRUE, sep = ";")
+View(targets)
+```
+
+Extraemos los grupos  y seleccionamos las muestras
+
+```{r}
+eli<- subset(targets, Group == "ELI")
+sfi<- subset(targets, Group == "SFI")
+nit<- subset(targets, Group == "NIT")
+```
+
+```{r}
+targets_eli<- eli[sample(nrow(eli), 10, replace = FALSE),]
+targets_sfi<- sfi[sample(nrow(sfi), 10, replace = FALSE),]
+targets_nit<- nit[sample(nrow(nit), 10, replace = FALSE),]
+```
+
+Los ponemos un solo dataframe, añadiendo como nombre de cada fila, el nombre del Sample_Name. Posteriormente mostramos los cinco primeros resultados para observar que todo ha salido bien.
+
+```{r}
+mytargets <- rbind(targets_eli, targets_nit, targets_sfi)
+row.names(mytargets) <- mytargets$Sample_Name
+head(mytargets, 5)
+```
+
+Existen difrencias entre las muestra en el dataset count y el datasets targets, por lo que los equiparamos y seleccionamos los datos de la muestras elegidas. Para ello modificamos el Sample_Name de targets y seleccionamos las muestras en count, ordenándolas por el orden de las muestras en el archivo targets, ya que será necesario tenerlas ordenadas para pode rutilizar el paquete DESeq2:
+
+```{r}
+library(stats)
+library(dplyr)
+mytargets$Sample_Name <- gsub("-",".", mytargets$Sample_Name)
+mycounts=counts[,c(mytargets$Sample_Name)]
+rownames(mycounts)=counts$X
+```
+
+Comprobamos el fichero de datos mycounts:
+
+```{r}
+View(mycounts)
+head(mycounts)
+```
+
+(Los nombres de ENSEMBL aparecen de forma que puedan leerse posteriormente, ya que se han reemplazado en el archivo Excel antes de ser procesado en R)
+
+## PREPROCESADO DE LOS DATOS: FILTRADO Y  NORMALIZACIÓN
+
+Utilizaremos la función DESeq2 para realizar el análisis de expresión
+```{r}
+library(BiocGenerics)
+library(DESeq2)
+```
+
+Para comenzar realizaremos la matriz de conteo que contiene los conteos brutos para cada muestra y realizaremos los pasos de control de calidad. Lo primero será formar la matriz con la función DESeqDataSetFromMatrix:
+
+```{r}
+dds_wt <- DESeqDataSetFromMatrix(countData = mycounts, colData = mytargets,design = ~ Group)
+```
+
+Una vez que ya tenemos la matriz que puede leer nuestra función, filtramos los datos obviando aquellos que sean igual a 1, ya que se probó anulando solo los valores menores de 0, pero no fue suficiente para tener buenos resultados:
+
+```{r}
+dds <- dds_wt [rowSums(counts((dds_wt))) > 1]
+dim(dds_wt)
+dim(dds)
+```
+
+Podemos observar una eliminación de aproximadamente 13000 muestras que ean menores de 1 
+
+Una vez tenemos los valores filtrados, se puede pasar a la normalización. DESeq2 utiliza un método de normalización de medianas, donde se ajustan los recuentos sin procesas para el tamaño de la biblioteca y es resistente a grandes cantidades de genes expresados diferencialmente.
+La función estimateSizeFactors reasigna los datos al propio dds:
+
+```{r}
+dds <- estimateSizeFactors(dds)
+sizeFactors(dds)
+```
+
+Los recuentros bruso para cada muestra se dividen por el factor de tamaño específico de muestra para la normalización. Para ver los factores de tamaño hemos usado la función sizeFactors.
+
+Una vez que los recuentos normalizados han sido calculados y agregados a DESeq2, los recuentos se pueden extraer de él a partir de la función counts:
+
+```{r}
+normalized_counts <- counts(dds, normalized=TRUE)
+```
+
+Visualizamos los datos en la tabla y en un gráfico de puntos: 
+
+```{r}
+View (normalized_counts)
+plot(normalized_counts, xlab="", ylab="", col="dark violet")
+```
+
+## IDENTIFICACIÓN DE GENES DIFERENCIALMENTE EXPRESADOS 
+
+Una vez que tenemos los datos normalizados, se puede continuar con el análisis de expresión diferencial.
+Para usar método de visualización, hay que transformar los recuentos normalizados mediante una transformación estabilizadora de varianza, que podemos ver en la función VST de DESeq2. Se trata de una transformación logarítmica que modera la varianza a través de la media:
+
+```{r}
+vsd <- vst(dds, blind=TRUE)
+```
+
+El argumento blind=TRUE especifica que la transformación debe ser ciega a la muestra.
+
+Podemos utilizar un mapheat para ver cuán parecidas o diferentes son las muestras de los diferentes grupos. El mapa de calor se crea utilizando los valores de correlación de expresión génica para todas las combinaciones por pares de muestras, siendo 1 la correlación perfecta. Dicha correlación se muestra por los colores.
+
+Para hacer un mapa, hay que transformar los valores normalizados añadidos a dds a matriz:
+
+```{r}
+vsd_mat<- assay(vsd)
+```
+
+Calculamos los valores de correlación y los visualizamos:
+
+```{r}
+vsd_cor <- cor(vsd_mat)
+View(vsd_cor)
+```
+
+Después de generar los valores de correlación, se puede utilizar el paquete pheatmap para crear el mapa de color:
+
+```{r}
+library(pheatmap)
+pheatmap(vsd_cor)
+```
+
+El argumento de anotación nos selecciona los factores de targets que se incluirán como barras de anotación, es decir, nos agrupará las muestras según los tres grupos iniciales.
+La salida del mapa de color muestra que las réplicas biológicas se agrupan y las condiciones se separan. Esto es alentados ya que los genes expresados diferencialmente entre las condiciones es probable que impulsen dicha separación. 
+
+También podemos realizar un gráfico PCA para representar los agrupamientos de otra forma y observar valores atípicos.
+
+```{r}
+plotPCA(vsd, intgroup = c("Group"))
+```
+
+En el mapa vemos que hay algún valor atípico, que probablemente se relaciones con los puntos de baja correlación en el mapa de colores.
+
+Una vez hemos visto la calidad de las muestras se puede comenzar el análisis de expresión diferencial. 
+
+El primer paso a seguir será ajustar los recuentos sin procesar al modelo DESeq2 estimando los factores de tamaño y la variación en la expresión a través de repeticiones para cada gen. Para realizar los cálculos necesitamos dos funciones, una que ya hemos utilizado anteriormente, ya que queremos los datos sin procesar, al no haber eliminado ningún valor tras el mapa de color y la PCA.
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = mycounts, colData = mytargets, design = ~ Group)
+```
+
+Ahora utilizamos DESeq para generar los pasos completos al completar los espacios de DESeq2:
+
+```{r}
+dds <- DESeq(dds)
+```
+
+Nuestro objeto final deberá tener todos los factores necesarios para realizar la prueba de expresión diferencial entre grupos de muestra específicos.
+
+Antes de continuar con el análisis debemos ver si nuestros datos se ajustan bien al modelo. Para los datos de RNA-seq, se espera que la varianza aumente con la expresión media del gen. Para observarlo, se puede calcular la media y la varianza para cada gen de las muestras normales usando la función apply:
+
+```{r}
+mean_counts <- apply(mycounts[, 1:3], 1, mean)
+variance_counts <- apply(mycounts[,1:3], 1, var)
+```
+
+Creamos un marco de datos para trazar ggplot2 y trazamos los valores medios para cada gen usando escalas log10:
+
+```{r}
+df <- data.frame(mean_counts, variance_counts)
+```
+
+```{r}
+library(ggplot2)
+ggplot(df) +
+        geom_point(aes(x=mean_counts, y=variance_counts)) + 
+        scale_y_log10() +
+        scale_x_log10() +
+        xlab("Mean counts per gene") +
+        ylab("Variance per gene")
+```
+
+Cada punto negro representa un gen. En el gráfico vemos que la varianza en la expresión génica aumenta con la media, es decir, se ajusta al modelo. 
+
+Para terminar de verificar el ajuste de nuestros datos al modelo DESeq2, puede ser útil observar las estimaciones de dispersión mediante la función plotDispEsts.
+
+```{r}
+plotDispEsts(dds)
+```
+
+El valor de dispersión media calculado teniendo en cuenta todos los genes se refleja en la línea roja. Los puntos negros son las estimaciones iniciales, que normalmente no se ajustan del todo bien y se reducen hacia la curva para obtener estimaciones precisas que se muestran como puntos azules y se utilizan para determinar los genes expresados diferencialmente. Podemos ver que nuestros datos se ajustan muy bien a la curva y, por tanto, al modelo.
+
+## ANOTACIÓN DE RESULTADOS
+
+Ahora que hemos explorado el ajuste nuestros datos al modelo, podemos extrae los resultados de la prueba de expresión diferencial.Los resultados se pueden extraer utilizando la función result. Para ello elegimos un alpha de 0.05 de significancia:
+
+```{r}
+result_nit_sfi <- results(dds, contrast = c ("Group", "NIT", "SFI"), alpha=0.05)
+result_nit_sfi
+```
+
+```{r}
+result_nit_eli <- results(dds, contrast = c ("Group", "NIT", "ELI"), alpha=0.05)
+result_nit_eli
+```
+
+```{r}
+result_eli_sfi <- results(dds, contrast = c ("Group", "ELI", "SFI"), alpha=0.05)
+result_eli_sfi
+```
+
+Se puede realizar un diagrama MA para ver la muestra de los recuentos normalizados frente a los genes probados:
+
+```{r}
+plotMA(result_eli_sfi)
+```
+
+```{r}
+plotMA(result_nit_eli)
+```
+
+```{r}
+plotMA(result_nit_sfi)
+```
+
+Se puede observar que en los resultados de los grupos NIT y SFI hay menos puntos rojos, es decir, menos genes diferencialmente expresados.
+
+## BUSCA DE PATRONES DE EXPRESIÓN Y AGRUPACIÓN DE LAS MUESTRAS
+
+Ahora se explorarán los resultados de expresión diferencial. Para obtener descripciones de las columnas en la tabla de resultados, se usa la función mcols:
+
+```{r}
+mcols(result_eli_sfi)
+```
+
+```{r}
+mcols(result_nit_eli)
+```
+
+```{r}
+mcols(result_nit_sfi)
+```
+
+En la primera columna vemos el valor medio de todas las muestras, seguido del log 2, cambios de plegado, error estándar de las estimaciones de cambio de plegado, la prueba de Wald, el pvalor para dicha prueba y el p ajustado de Benjamini-Hochberg.
+
+Para determinar los genes significativos, utilizamos valores p ajustados para BH:
+
+```{r}
+head(result_eli_sfi, n=15)
+```
+
+```{r}
+head(result_nit_eli, n=15)
+```
+
+```{r}
+head(result_nit_sfi, n=15)
+```
+
+Los genes filtrados por DESeq2 aparacen en las tablas representados por NA. Podemos utilizar summary para ver los genes expresados para nuestro nivel de significancia 0.05 e información sobre el número de genes filtrados:
+
+```{r}
+summary(result_eli_sfi)
+```
+
+```{r}
+summary(result_nit_eli)
+```
+
+```{r}
+summary(result_nit_sfi)
+```
+
+En estos resultados, se puede ver la suma de los genes DE para cada grupo de comparación, aquellos que tienen un log2 fold que cambia menos de 0 y aquellos con fold que cambia más que 0.
+
+Para descubrir a qué genes pertenecen los resultados, añadimos el valor de ID de genes ENSEMBL:
+
+```{r}
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+result_eli_sfi$symbol <- mapIds(org.Hs.eg.db, keys=row.names(result_eli_sfi), column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first")
+result_eli_sfi$GO <- mapIds(org.Hs.eg.db, keys=row.names(result_eli_sfi), column = "GO", keytype = "ENSEMBL", multiVals = "first")
+result_nit_eli$symbol <- mapIds(org.Hs.eg.db, keys=row.names(result_nit_eli), column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first")
+result_nit_eli$GO <- mapIds(org.Hs.eg.db, keys=row.names(result_nit_eli), column = "GO", keytype = "ENSEMBL", multiVals = "first")
+result_nit_sfi$symbol <- mapIds(org.Hs.eg.db, keys=row.names(result_nit_sfi), column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first")
+result_nit_sfi$GO <- mapIds(org.Hs.eg.db, keys=row.names(result_nit_sfi), column = "GO", keytype = "ENSEMBL", multiVals = "first")
+
+```
+
+Comprobamos la información:
+
+```{r}
+head(result_eli_sfi)
+head(result_nit_eli)
+head(result_nit_sfi)
+```
+
+## ANÁLISIS DE SIGNIFICACIÓN BIOLÓGICA
+
+Ahora visualizaremos los resultados para obtener una visión general del análisis mediante algunos métodos de visualización estándar.
+
+Un método de visualización es mediante la gráfica del volcán, que muestra los cambios de pliegue en relación con los p valores ajustados para todos los genes
+
+```{r}
+with(result_eli_sfi, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot", xlim=c(-2.5,2), col="dark violet"))
+```
+
+```{r}
+with(result_nit_eli, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot", xlim=c(-2.5,2), col="dark violet"))
+```
+
+```{r}
+with(result_nit_sfi, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot", xlim=c(-2.5,2), col="dark violet"))
+```
+
+Para finalizar, guardamos los resultados en tablas y formato csv:
+
+```{r}
+result_eli_sfi <- as.data.frame(result_eli_sfi)
+write.csv(result_eli_sfi[1:20,], file="/Users/maria/OneDrive/UOC/Análisis de datos ómicos/PEC 2/data/result_eli_Sfi.csv")
+```
+
+```{r}
+result_nit_eli <- as.data.frame(result_nit_eli)
+write.csv(result_nit_eli[1:20,], file="/Users/maria/OneDrive/UOC/Análisis de datos ómicos/PEC 2/data/result_nit_eli.csv")
+```
+
+```{r}
+result_nit_sfi <- as.data.frame(result_nit_sfi)
+write.csv(result_nit_sfi[1:20,], file="/Users/maria/OneDrive/UOC/Análisis de datos ómicos/PEC 2/data/result_nit_Sfi.csv")
+```
+
+Por último, generamos la información de la sesión:
+
+```{r}
+sessionInfo()
+```
+
